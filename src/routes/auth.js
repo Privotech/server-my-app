@@ -103,6 +103,59 @@ router.post('/deposits', auth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+router.post('/bill-payments', auth, async (req, res, next) => {
+  try {
+    const { type, provider, recipient, amount, plan = '' } = req.body;
+    const supportedTypes = {
+      airtime: 'Airtime top-up',
+      data: 'Data bundle',
+      electricity: 'Electricity bill',
+      tv: 'TV subscription'
+    };
+    const value = Number(amount);
+    const cleanProvider = typeof provider === 'string' ? provider.trim() : '';
+    const cleanRecipient = typeof recipient === 'string' ? recipient.trim() : '';
+    const cleanPlan = typeof plan === 'string' ? plan.trim() : '';
+
+    if (!Object.hasOwn(supportedTypes, type) ||
+        !cleanProvider || cleanProvider.length > 80 ||
+        !cleanRecipient || cleanRecipient.length > 40 ||
+        !Number.isFinite(value) || value <= 0 || value > 10000000 ||
+        cleanPlan.length > 100) {
+      return res.status(400).json({ message: 'Enter a valid service, provider, recipient, and amount up to ₦10,000,000' });
+    }
+
+    if ((type === 'airtime' || type === 'data') && !/^\+?[\d\s()-]{7,24}$/.test(cleanRecipient)) {
+      return res.status(400).json({ message: 'Enter a valid phone number' });
+    }
+
+    const result = await store.update((db) => {
+      const account = db.accounts.find((item) => item.userId === req.userId);
+      const kobo = Math.round(value * 100);
+      if (!account || account.balanceKobo < kobo) return null;
+
+      account.balanceKobo -= kobo;
+      const description = `${supportedTypes[type]} · ${cleanProvider}${cleanPlan ? ` · ${cleanPlan}` : ''}`;
+      const transaction = {
+        id: crypto.randomUUID(),
+        userId: req.userId,
+        type,
+        createdAt: new Date().toISOString(),
+        description,
+        amount: -value,
+        status: 'Demo completed',
+        recipient: cleanRecipient,
+        bank: cleanProvider
+      };
+      db.transactions.push(transaction);
+      return { transaction, balance: account.balanceKobo / 100 };
+    });
+
+    if (!result) return res.status(400).json({ message: 'Insufficient balance' });
+    res.status(201).json({ ...result, message: 'Demo payment recorded. No real payment was made.' });
+  } catch (error) { next(error); }
+});
+
 router.post('/support', auth, async (req, res, next) => {
   try {
     const { type = 'message', name = '', email = '', message = '' } = req.body;
